@@ -17,8 +17,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "ema_periods": {"fast": 20, "mid": 50, "slow": 200},
     "atr_period": 14,
     "atr_multiplier": 0.5,
-    "consolidation_slope_threshold": 0.001,  # EMA50 slope filter; 0 to disable
-    "consolidation_lookback": 10,             # bars to measure EMA50 slope
+    "consolidation_min_votes": 2,           # 至少满足几个指标才判定为盘整 (0=关闭)
+    "consolidation_bb_period": 20,          # Bollinger Band 计算周期
+    "consolidation_bb_threshold": 0.03,     # BB 宽度阈值 (3%)
+    "consolidation_ema_gap_atr": 1.5,       # EMA20-EMA50 差值 / ATR 阈值
+    "consolidation_range_bars": 10,         # 价格区间回看 K 线数
+    "consolidation_range_threshold": 0.015, # 价格区间 / EMA50 阈值 (1.5%)
     "alert_cooldown_minutes": 15,
     "poll_interval_seconds": 60,
     "discord": {"enabled": False, "webhook_url": ""},
@@ -134,12 +138,28 @@ class ConfigManager:
         return float(self.get("atr_multiplier", default=0.5))
 
     @property
-    def consolidation_slope_threshold(self) -> float:
-        return float(self.get("consolidation_slope_threshold", default=0.001))
+    def consolidation_min_votes(self) -> int:
+        return int(self.get("consolidation_min_votes", default=2))
 
     @property
-    def consolidation_lookback(self) -> int:
-        return int(self.get("consolidation_lookback", default=10))
+    def consolidation_bb_period(self) -> int:
+        return int(self.get("consolidation_bb_period", default=20))
+
+    @property
+    def consolidation_bb_threshold(self) -> float:
+        return float(self.get("consolidation_bb_threshold", default=0.03))
+
+    @property
+    def consolidation_ema_gap_atr(self) -> float:
+        return float(self.get("consolidation_ema_gap_atr", default=1.5))
+
+    @property
+    def consolidation_range_bars(self) -> int:
+        return int(self.get("consolidation_range_bars", default=10))
+
+    @property
+    def consolidation_range_threshold(self) -> float:
+        return float(self.get("consolidation_range_threshold", default=0.015))
 
     @property
     def alert_cooldown_minutes(self) -> int:

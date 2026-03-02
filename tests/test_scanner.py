@@ -50,6 +50,20 @@ def make_bearish_df(n=250, start=200.0, slope=-0.05):
     return make_df(prices)
 
 
+def make_strong_bullish_df(n=300):
+    """Rising prices with enough volatility to pass the consolidation filter."""
+    import math
+    prices = [100.0 + i * 0.5 + 2.0 * math.sin(i * 0.3) for i in range(n)]
+    return make_df(prices, high_mult=1.01, low_mult=0.99)
+
+
+def make_strong_bearish_df(n=300):
+    """Falling prices with enough volatility to pass the consolidation filter."""
+    import math
+    prices = [200.0 - i * 0.5 - 2.0 * math.sin(i * 0.3) for i in range(n)]
+    return make_df(prices, high_mult=1.01, low_mult=0.99)
+
+
 def make_scanner(multiplier=0.5, cooldown=0):
     q = queue.Queue()
     scanner = StockScanner(
@@ -297,18 +311,16 @@ class TestStockScannerStateMachine(unittest.TestCase):
 
     def test_bullish_trend_detected(self):
         scanner, q = self._make_scanner()
-        df = make_bullish_df(300, slope=0.1)
+        df = make_strong_bullish_df()
         scanner.process("TEST", df)
         snap = scanner.get_snapshot("TEST")
         self.assertIsNotNone(snap)
         state, direction = snap
-        # Should detect some trend state (bullish or no_trend depending on EMAs)
-        # With strong uptrend, should be BULLISH
         self.assertEqual(direction, TrendDirection.BULLISH)
 
     def test_bearish_trend_detected(self):
         scanner, q = self._make_scanner()
-        df = make_bearish_df(300, slope=-0.1)
+        df = make_strong_bearish_df()
         scanner.process("TEST", df)
         snap = scanner.get_snapshot("TEST")
         self.assertIsNotNone(snap)
@@ -332,7 +344,7 @@ class TestStockScannerStateMachine(unittest.TestCase):
 
     def test_trending_alert_emitted_on_first_detection(self):
         scanner, q = self._make_scanner()
-        df = make_bullish_df(300, slope=0.1)
+        df = make_strong_bullish_df()
         scanner.process("TEST", df)
         if not q.empty():
             alert = q.get_nowait()
@@ -343,18 +355,18 @@ class TestStockScannerStateMachine(unittest.TestCase):
     def test_pullback_detected_when_price_near_ema(self):
         """Build a price series that ends with a pullback."""
         scanner, q = self._make_scanner(multiplier=2.0)   # very wide threshold
-        # First: establish bullish trend
-        uptrend = [100.0 + i * 0.1 for i in range(300)]
-        df_up = make_df(uptrend)
+        # First: establish bullish trend with enough volatility
+        df_up = make_strong_bullish_df()
         scanner.process("PULL", df_up)
         _ = scanner.get_snapshot("PULL")
 
         # Now: extend the series with price converging to EMA20 (pullback)
-        # The last close is near ema_fast value, so dist/ATR will be small
-        last_close = uptrend[-1]
+        import math
+        base = [100.0 + i * 0.5 + 2.0 * math.sin(i * 0.3) for i in range(300)]
+        last_close = base[-1]
         ema_approx = last_close * 0.999   # slightly below close (simulating price near EMA20)
-        pullback_prices = uptrend + [ema_approx] * 10
-        df_pull = make_df(pullback_prices)
+        pullback_prices = base + [ema_approx] * 10
+        df_pull = make_df(pullback_prices, high_mult=1.01, low_mult=0.99)
         scanner.process("PULL", df_pull)
         snap = scanner.get_snapshot("PULL")
         # State should be PULLBACK or TRENDING (depends on exact EMA values)
@@ -364,7 +376,7 @@ class TestStockScannerStateMachine(unittest.TestCase):
 
     def test_no_alert_during_cooldown(self):
         scanner, q = self._make_scanner(cooldown=60)  # 60-min cooldown
-        df = make_bullish_df(300, slope=0.1)
+        df = make_strong_bullish_df()
         scanner.process("TEST", df)
         # Drain initial alert
         while not q.empty():
@@ -376,13 +388,13 @@ class TestStockScannerStateMachine(unittest.TestCase):
     def test_alert_emitted_after_direction_flip(self):
         """Re-alert when trend direction changes."""
         scanner, q = self._make_scanner(cooldown=0)
-        df_bull = make_bullish_df(300, slope=0.1)
+        df_bull = make_strong_bullish_df()
         scanner.process("TEST", df_bull)
         while not q.empty():
             q.get_nowait()
 
         # Switch to bearish
-        df_bear = make_bearish_df(300, slope=-0.1)
+        df_bear = make_strong_bearish_df()
         scanner.process("TEST", df_bear)
         # Should emit a new alert for bearish direction
         if not q.empty():
@@ -394,7 +406,7 @@ class TestStockScannerStateMachine(unittest.TestCase):
         scanner, q = self._make_scanner(multiplier=2.0, cooldown=0)
 
         # Establish bullish trend
-        df_bull = make_bullish_df(300, slope=0.1)
+        df_bull = make_strong_bullish_df()
         scanner.process("TEST", df_bull)
         # Drain alerts
         while not q.empty():
@@ -406,7 +418,7 @@ class TestStockScannerStateMachine(unittest.TestCase):
         state.direction = TrendDirection.BULLISH
 
         # Now process bearish data (direction flip)
-        df_bear = make_bearish_df(300, slope=-0.1)
+        df_bear = make_strong_bearish_df()
         scanner.process("TEST", df_bear)
 
         snap = scanner.get_snapshot("TEST")
@@ -424,7 +436,7 @@ class TestStockScannerStateMachine(unittest.TestCase):
         scanner, q = self._make_scanner(multiplier=0.5, cooldown=0)
 
         # Start trending
-        df_bull = make_bullish_df(300, slope=0.1)
+        df_bull = make_strong_bullish_df()
         scanner.process("TEST", df_bull)
         while not q.empty():
             q.get_nowait()
@@ -436,8 +448,9 @@ class TestStockScannerStateMachine(unittest.TestCase):
 
         # Build a frame where price is well above EMA20 (large distance ratio)
         # Use a very steep uptrend ending so price >> EMA20
-        prices = [100.0 + i * 0.5 for i in range(300)]   # steep uptrend
-        df_steep = make_df(prices)
+        import math
+        prices = [100.0 + i * 1.0 + 2.0 * math.sin(i * 0.3) for i in range(300)]
+        df_steep = make_df(prices, high_mult=1.01, low_mult=0.99)
         scanner.process("TEST", df_steep)
 
         snap = scanner.get_snapshot("TEST")
@@ -461,8 +474,8 @@ class TestStockScannerStateMachine(unittest.TestCase):
 
     def test_multiple_symbols_independent(self):
         scanner, q = self._make_scanner()
-        df_bull = make_bullish_df(300, slope=0.1)
-        df_bear = make_bearish_df(300, slope=-0.1)
+        df_bull = make_strong_bullish_df()
+        df_bear = make_strong_bearish_df()
         scanner.process("BULL", df_bull)
         scanner.process("BEAR", df_bear)
         snap_bull = scanner.get_snapshot("BULL")
@@ -510,7 +523,7 @@ class TestDistanceRatio(unittest.TestCase):
             atr_multiplier=10.0,   # very wide threshold: almost always pullback
             cooldown_minutes=0,
         )
-        df = make_bullish_df(300, slope=0.05)
+        df = make_strong_bullish_df()
         scanner.process("TEST", df)
         snap = scanner.get_snapshot("TEST")
         if snap:
@@ -528,7 +541,7 @@ class TestDistanceRatio(unittest.TestCase):
         scanner, q = make_scanner(multiplier=0.5, cooldown=0)
 
         # 1. Establish bullish trend
-        df_bull = make_bullish_df(300, slope=0.1)
+        df_bull = make_strong_bullish_df()
         scanner.process("TEST", df_bull)
         while not q.empty():
             q.get_nowait()   # drain initial alerts
@@ -541,7 +554,9 @@ class TestDistanceRatio(unittest.TestCase):
 
         # 3. Process a steep-uptrend frame so price is far from EMA20
         #    → hysteresis exit: PULLBACK → TRENDING, direction unchanged
-        df_steep = make_bullish_df(300, slope=0.5)
+        import math
+        prices = [100.0 + i * 1.0 + 2.0 * math.sin(i * 0.3) for i in range(300)]
+        df_steep = make_df(prices, high_mult=1.01, low_mult=0.99)
         scanner.process("TEST", df_steep)
 
         # 4. No alert should have been emitted (trend direction did not change)

@@ -74,8 +74,12 @@ class ScannerThread(threading.Thread):
             atr_period=self._config.atr_period,
             atr_multiplier=self._config.atr_multiplier,
             cooldown_minutes=self._config.alert_cooldown_minutes,
-            consolidation_slope_threshold=self._config.consolidation_slope_threshold,
-            consolidation_lookback=self._config.consolidation_lookback,
+            consolidation_min_votes=self._config.consolidation_min_votes,
+            consolidation_bb_period=self._config.consolidation_bb_period,
+            consolidation_bb_threshold=self._config.consolidation_bb_threshold,
+            consolidation_ema_gap_atr=self._config.consolidation_ema_gap_atr,
+            consolidation_range_bars=self._config.consolidation_range_bars,
+            consolidation_range_threshold=self._config.consolidation_range_threshold,
         )
 
     def rebuild_scanner(self) -> None:

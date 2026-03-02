@@ -130,8 +130,13 @@ class StockScanner:
         atr_period: int = 14,
         atr_multiplier: float = 0.5,
         cooldown_minutes: int = 15,
-        consolidation_slope_threshold: float = 0.001,
-        consolidation_lookback: int = 10,
+        # Consolidation filter
+        consolidation_min_votes: int = 2,
+        consolidation_bb_period: int = 20,
+        consolidation_bb_threshold: float = 0.03,
+        consolidation_ema_gap_atr: float = 1.5,
+        consolidation_range_bars: int = 10,
+        consolidation_range_threshold: float = 0.015,
     ):
         self._queue = alert_queue
         self.ema_fast = ema_fast
@@ -140,8 +145,12 @@ class StockScanner:
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.cooldown_minutes = cooldown_minutes
-        self.consolidation_slope_threshold = consolidation_slope_threshold
-        self.consolidation_lookback = consolidation_lookback
+        self.consolidation_min_votes = consolidation_min_votes
+        self.consolidation_bb_period = consolidation_bb_period
+        self.consolidation_bb_threshold = consolidation_bb_threshold
+        self.consolidation_ema_gap_atr = consolidation_ema_gap_atr
+        self.consolidation_range_bars = consolidation_range_bars
+        self.consolidation_range_threshold = consolidation_range_threshold
         self._states: Dict[str, StockState] = {}
 
     def _get_state(self, symbol: str) -> StockState:
@@ -158,25 +167,67 @@ class StockScanner:
             return TrendDirection.BEARISH
         return TrendDirection.NONE
 
-    def _is_consolidating(self, ema_mid_series: pd.Series) -> bool:
+    def _is_consolidating(
+        self,
+        df: pd.DataFrame,
+        ema_f: float,
+        ema_m: float,
+        atr: float,
+    ) -> bool:
         """
-        Return True when EMA50 is essentially flat (consolidation zone).
+        Three-indicator voting filter to detect price consolidation/ranging.
 
-        Slope = (ema_mid[-1] - ema_mid[-lookback]) / ema_mid[-lookback]
-        If |slope| < threshold the market is considered to be consolidating
-        and no new trend signal should fire.
-        A threshold of 0 disables the filter entirely.
+        A symbol is considered consolidating when at least 2 of 3 conditions hold:
+
+        1. BB width  — Bollinger Band width (Upper-Lower)/SMA is narrow,
+                       indicating low volatility / tight range.
+
+        2. EMA gap   — |EMA20 - EMA50| / ATR is small, meaning the two fast
+                       EMAs are converging (trend losing momentum).
+
+        3. Price range — (highest High - lowest Low) over recent N bars,
+                         normalised by EMA50, is small.
+
+        All thresholds are configurable; set consolidation_min_votes=0 to disable.
         """
-        if self.consolidation_slope_threshold <= 0:
+        if self.consolidation_min_votes <= 0:
             return False
-        n = self.consolidation_lookback
-        if len(ema_mid_series) < n + 1:
-            return False
-        base = float(ema_mid_series.iloc[-(n + 1)])
-        if base == 0:
-            return False
-        slope = (float(ema_mid_series.iloc[-1]) - base) / base
-        return abs(slope) < self.consolidation_slope_threshold
+
+        votes = 0
+
+        # ── 1. Bollinger Band width ───────────────────────────────────────────
+        bb_period = self.consolidation_bb_period
+        if len(df) >= bb_period:
+            close = df["Close"].iloc[-bb_period:]
+            sma = float(close.mean())
+            if sma > 0:
+                std = float(close.std(ddof=1))
+                bb_width = (2 * 2 * std) / sma   # (upper - lower) / sma, 2σ bands
+                if bb_width < self.consolidation_bb_threshold:
+                    votes += 1
+
+        # ── 2. EMA convergence ────────────────────────────────────────────────
+        if atr > 0:
+            ema_gap_ratio = abs(ema_f - ema_m) / atr
+            if ema_gap_ratio < self.consolidation_ema_gap_atr:
+                votes += 1
+
+        # ── 3. Recent price range ─────────────────────────────────────────────
+        n = self.consolidation_range_bars
+        if len(df) >= n and ema_m > 0:
+            recent_high = float(df["High"].iloc[-n:].max())
+            recent_low  = float(df["Low"].iloc[-n:].min())
+            range_ratio = (recent_high - recent_low) / ema_m
+            if range_ratio < self.consolidation_range_threshold:
+                votes += 1
+
+        consolidating = votes >= self.consolidation_min_votes
+        if consolidating:
+            logger.debug(
+                "%s consolidation votes=%d (bb/gap/range need %d)",
+                "symbol", votes, self.consolidation_min_votes,
+            )
+        return consolidating
 
     def process(self, symbol: str, df: pd.DataFrame) -> None:
         """
@@ -210,9 +261,9 @@ class StockScanner:
         current_trend = self._detect_trend(price, ema_f, ema_m, ema_s)
 
         # ── Consolidation filter ──────────────────────────────────────────────
-        # If EMA50 slope is flat, treat as no-trend regardless of EMA alignment.
-        # This prevents signalling a trend that is actually just chop/range.
-        consolidating = self._is_consolidating(indicators["ema_mid"])
+        # Three-indicator voting: BB width + EMA gap + price range.
+        # If ≥ min_votes indicators say "ranging", suppress trend signal.
+        consolidating = self._is_consolidating(df, ema_f, ema_m, atr)
         if consolidating:
             current_trend = TrendDirection.NONE
             logger.debug("%s: consolidation detected, suppressing trend signal", symbol)
