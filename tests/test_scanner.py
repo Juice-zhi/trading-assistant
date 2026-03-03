@@ -64,6 +64,13 @@ def make_strong_bearish_df(n=300):
     return make_df(prices, high_mult=1.01, low_mult=0.99)
 
 
+def process_incremental(scanner, symbol, df, min_bars=210):
+    """Feed df to scanner row-by-row (starting from min_bars) to allow state
+    machine confirmation counters to accumulate naturally."""
+    for i in range(min_bars, len(df)):
+        scanner.process(symbol, df.iloc[:i+1])
+
+
 def make_scanner(multiplier=0.5, cooldown=0):
     q = queue.Queue()
     scanner = StockScanner(
@@ -355,21 +362,15 @@ class TestStockScannerStateMachine(unittest.TestCase):
     def test_pullback_detected_when_price_near_ema(self):
         """Build a price series that ends with a pullback."""
         scanner, q = self._make_scanner(multiplier=2.0)   # very wide threshold
-        # First: establish bullish trend with enough volatility
-        df_up = make_strong_bullish_df()
-        scanner.process("PULL", df_up)
-        _ = scanner.get_snapshot("PULL")
-
-        # Now: extend the series with price converging to EMA20 (pullback)
+        # Feed incrementally so confirmation counters work
         import math
         base = [100.0 + i * 0.5 + 2.0 * math.sin(i * 0.3) for i in range(300)]
         last_close = base[-1]
-        ema_approx = last_close * 0.999   # slightly below close (simulating price near EMA20)
+        ema_approx = last_close * 0.999
         pullback_prices = base + [ema_approx] * 10
         df_pull = make_df(pullback_prices, high_mult=1.01, low_mult=0.99)
-        scanner.process("PULL", df_pull)
+        process_incremental(scanner, "PULL", df_pull)
         snap = scanner.get_snapshot("PULL")
-        # State should be PULLBACK or TRENDING (depends on exact EMA values)
         if snap:
             state, _ = snap
             self.assertIn(state, [SignalState.PULLBACK, SignalState.TRENDING])
@@ -524,11 +525,10 @@ class TestDistanceRatio(unittest.TestCase):
             cooldown_minutes=0,
         )
         df = make_strong_bullish_df()
-        scanner.process("TEST", df)
+        process_incremental(scanner, "TEST", df)
         snap = scanner.get_snapshot("TEST")
         if snap:
             state, direction = snap
-            # With threshold=10.0, price is almost always "near" EMA → PULLBACK
             self.assertIn(state, [SignalState.PULLBACK, SignalState.TRENDING])
 
 

@@ -105,6 +105,9 @@ class StockState:
     direction: TrendDirection = TrendDirection.NONE
     resumed_from_pullback: bool = False
     last_alerts: Dict[str, datetime] = field(default_factory=dict)
+    # Confirmation counters to avoid single-bar flips
+    trend_confirm_count: int = 0   # bars of consecutive EMA alignment seen
+    no_trend_count: int = 0        # bars of consecutive NO_TREND seen (for exit)
 
     def is_on_cooldown(self, alert_type: str, cooldown_minutes: int) -> bool:
         last = self.last_alerts.get(alert_type)
@@ -130,13 +133,17 @@ class StockScanner:
         atr_period: int = 14,
         atr_multiplier: float = 0.5,
         cooldown_minutes: int = 15,
+        # Trend confirmation: require N consecutive bars of EMA alignment before
+        # entering TRENDING, and M consecutive bars of misalignment before exiting.
+        trend_confirm_bars: int = 3,
+        trend_exit_bars: int = 2,
         # Consolidation filter
         consolidation_min_votes: int = 2,
         consolidation_bb_period: int = 20,
-        consolidation_bb_threshold: float = 0.03,
-        consolidation_ema_gap_atr: float = 1.5,
+        consolidation_bb_threshold: float = 0.006,
+        consolidation_ema_gap_atr: float = 0.5,
         consolidation_range_bars: int = 10,
-        consolidation_range_threshold: float = 0.015,
+        consolidation_range_threshold: float = 0.004,
     ):
         self._queue = alert_queue
         self.ema_fast = ema_fast
@@ -145,6 +152,8 @@ class StockScanner:
         self.atr_period = atr_period
         self.atr_multiplier = atr_multiplier
         self.cooldown_minutes = cooldown_minutes
+        self.trend_confirm_bars = trend_confirm_bars
+        self.trend_exit_bars = trend_exit_bars
         self.consolidation_min_votes = consolidation_min_votes
         self.consolidation_bb_period = consolidation_bb_period
         self.consolidation_bb_threshold = consolidation_bb_threshold
@@ -161,9 +170,12 @@ class StockScanner:
     def _detect_trend(
         self, price: float, ema_f: float, ema_m: float, ema_s: float
     ) -> TrendDirection:
-        if ema_f > ema_m > ema_s and price > ema_f:
+        # Primary condition: EMA20/50 alignment + price on the correct side.
+        # EMA200 is not required to have fully flipped on 1-min bars — it lags
+        # too much to be useful for detecting the start of a new intraday move.
+        if ema_f > ema_m and price > ema_f:
             return TrendDirection.BULLISH
-        if ema_f < ema_m < ema_s and price < ema_f:
+        if ema_f < ema_m and price < ema_f:
             return TrendDirection.BEARISH
         return TrendDirection.NONE
 
@@ -275,37 +287,51 @@ class StockScanner:
 
         # ── State machine transitions ─────────────────────────────────────────
         if current_trend == TrendDirection.NONE:
-            # Trend broken — reset
-            state.signal_state = SignalState.NO_TREND
-            state.direction = TrendDirection.NONE
+            state.trend_confirm_count = 0
+            if state.signal_state in (SignalState.TRENDING, SignalState.PULLBACK):
+                # Don't exit immediately — wait for trend_exit_bars consecutive NONE
+                state.no_trend_count += 1
+                if state.no_trend_count >= self.trend_exit_bars:
+                    state.signal_state = SignalState.NO_TREND
+                    state.direction = TrendDirection.NONE
+                    state.no_trend_count = 0
+            # Already NO_TREND: stay
+        else:
+            state.no_trend_count = 0  # reset exit counter when trend present
 
-        elif state.signal_state == SignalState.NO_TREND:
-            # Fresh trend detection
-            state.signal_state = SignalState.TRENDING
-            state.direction = current_trend
+            if state.signal_state == SignalState.NO_TREND:
+                # Require trend_confirm_bars consecutive bars before entering TRENDING
+                if current_trend == TrendDirection(state.direction.value) if state.direction != TrendDirection.NONE else False:
+                    # Same direction building up
+                    state.trend_confirm_count += 1
+                else:
+                    # New direction — reset counter
+                    state.trend_confirm_count = 1
+                    state.direction = current_trend
 
-        elif state.signal_state == SignalState.TRENDING:
-            if current_trend != state.direction:
-                # Direction flipped
-                state.direction = current_trend
+                if state.trend_confirm_count >= self.trend_confirm_bars:
+                    state.signal_state = SignalState.TRENDING
+                    state.trend_confirm_count = 0
 
-            if distance_ratio < self.atr_multiplier:
-                state.signal_state = SignalState.PULLBACK
+            elif state.signal_state == SignalState.TRENDING:
+                if current_trend != state.direction:
+                    # Direction flipped while trending — reset to NO_TREND so
+                    # confirmation is required for the new direction too
+                    state.signal_state = SignalState.NO_TREND
+                    state.direction = current_trend
+                    state.trend_confirm_count = 1
+                elif distance_ratio < self.atr_multiplier:
+                    state.signal_state = SignalState.PULLBACK
 
-        elif state.signal_state == SignalState.PULLBACK:
-            if current_trend == TrendDirection.NONE:
-                state.signal_state = SignalState.NO_TREND
-                state.direction = TrendDirection.NONE
-            elif current_trend != state.direction:
-                # Trend direction flipped while in pullback — treat as new trend
-                state.signal_state = SignalState.NO_TREND
-                state.direction = TrendDirection.NONE
-            elif distance_ratio > self.atr_multiplier * 1.5:
-                # Hysteresis: price moved away from EMA20, trend continues.
-                # Mark as resuming so alert logic knows not to re-notify.
-                state.signal_state = SignalState.TRENDING
-                state.direction = current_trend
-                state.resumed_from_pullback = True
+            elif state.signal_state == SignalState.PULLBACK:
+                if current_trend != state.direction:
+                    state.signal_state = SignalState.NO_TREND
+                    state.direction = TrendDirection.NONE
+                    state.trend_confirm_count = 0
+                elif distance_ratio > self.atr_multiplier * 1.5:
+                    state.signal_state = SignalState.TRENDING
+                    state.direction = current_trend
+                    state.resumed_from_pullback = True
         # ── Emit alerts ───────────────────────────────────────────────────────
         alert: Optional[Alert] = None
 
