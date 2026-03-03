@@ -124,6 +124,7 @@ class ScannerThread(threading.Thread):
 
     def _scan_cycle(self) -> None:
         symbols = list(self._config.symbols)   # snapshot before iteration
+        total = len(symbols)
         notifier = DiscordNotifier(
             webhook_url=self._config.discord_webhook_url,
             enabled=self._config.discord_enabled,
@@ -138,14 +139,18 @@ class ScannerThread(threading.Thread):
             self._scanner._queue = capture_queue
 
             try:
-                for symbol in symbols:
+                for idx, symbol in enumerate(symbols, start=1):
                     if self._stop_event.is_set():
                         break
-                    self._alert_queue.put({"type": "scan_status", "symbol": symbol, "status": "fetching..."})
+                    self._alert_queue.put({
+                        "type": "scan_progress",
+                        "symbol": symbol,
+                        "done": idx,
+                        "total": total,
+                    })
                     df = fetch_ohlcv(symbol)
                     if df is None:
                         logger.warning("No data for %s, skipping", symbol)
-                        self._alert_queue.put({"type": "scan_status", "symbol": symbol, "status": "no data"})
                         continue
                     self._scanner.process(symbol, df)
                     self._push_indicator_update(symbol, df)
@@ -158,6 +163,12 @@ class ScannerThread(threading.Thread):
             alert: Alert = capture_queue.get_nowait()
             self._alert_queue.put(alert)
             notifier.send_alert(alert)
+
+        self._alert_queue.put({
+            "type": "scan_complete",
+            "total": total,
+            "timestamp": datetime.now(ET).strftime("%H:%M:%S"),
+        })
 
     def _push_indicator_update(self, symbol: str, df) -> None:
         """Push a raw indicator snapshot to the UI queue (no alert, no Discord)."""

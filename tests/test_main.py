@@ -172,10 +172,9 @@ class TestScannerThreadScanCycle(unittest.TestCase):
     def test_scan_cycle_handles_none_data(self, mock_fetch):
         thread, q, _ = self._make_thread()
         thread._scan_cycle()   # Should not raise
-        # scan_status messages should be in queue
         messages = [q.get_nowait() for _ in range(q.qsize())]
         types = [m.get("type") for m in messages if isinstance(m, dict)]
-        self.assertIn("scan_status", types)
+        self.assertIn("scan_complete", types)
 
     @patch("main.fetch_ohlcv", return_value=None)
     def test_scan_cycle_processes_all_symbols(self, mock_fetch):
@@ -215,9 +214,9 @@ class TestScannerThreadScanCycle(unittest.TestCase):
         while not q.empty():
             items.append(q.get_nowait())
 
-        # At minimum, scan_status was emitted
+        # At minimum, scan_complete was emitted
         types = [i.get("type") for i in items if isinstance(i, dict)]
-        self.assertIn("scan_status", types)
+        self.assertIn("scan_complete", types)
 
 
 if __name__ == "__main__":

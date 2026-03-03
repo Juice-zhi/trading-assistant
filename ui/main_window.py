@@ -296,7 +296,21 @@ class MainWindow:
             text = "● Market: OPEN" if open_ else "○ Market: CLOSED"
             color = "#2ecc71" if open_ else "#e74c3c"
             self._market_label.configure(text=text, fg=color)
+        elif kind == "scan_progress":
+            done = msg.get("done", 0)
+            total = msg.get("total", 0)
+            symbol = msg.get("symbol", "")
+            self._status_label.configure(
+                text=f"[{datetime.now().strftime('%H:%M:%S')}] Scanning {symbol}… ({done}/{total})"
+            )
+        elif kind == "scan_complete":
+            total = msg.get("total", 0)
+            ts = msg.get("timestamp", datetime.now().strftime("%H:%M:%S"))
+            self._status_label.configure(
+                text=f"[{ts}] Scan complete — {total} symbol{'s' if total != 1 else ''} updated"
+            )
         elif kind == "scan_status":
+            # legacy fallback
             symbol = msg.get("symbol", "")
             status = msg.get("status", "")
             self._status_label.configure(
@@ -415,12 +429,23 @@ class _InputDialog(tk.Toplevel):
 
         btn_frame = tk.Frame(self, bg="#1e1e1e")
         btn_frame.pack(pady=12)
-        tk.Button(btn_frame, text="Add", command=self._ok,
-                  bg="#3a7bd5", fg="white", relief=tk.FLAT,
-                  padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_frame, text="Cancel", command=self.destroy,
-                  bg="#555555", fg="white", relief=tk.FLAT,
-                  padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=4)
+
+        def _make_dlg_btn(parent, text, command, bg):
+            lbl = tk.Label(parent, text=text, bg=bg, fg="white",
+                           font=("Helvetica", 10), cursor="hand2",
+                           padx=12, pady=4, relief=tk.FLAT)
+            lbl.bind("<Button-1>", lambda e: command())
+            lbl.bind("<Enter>", lambda e: lbl.configure(bg=_darken(bg)))
+            lbl.bind("<Leave>", lambda e: lbl.configure(bg=bg))
+            return lbl
+
+        def _darken(hex_color):
+            h = hex_color.lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            return f"#{max(0,r-30):02x}{max(0,g-30):02x}{max(0,b-30):02x}"
+
+        _make_dlg_btn(btn_frame, "Add", self._ok, "#3a7bd5").pack(side=tk.LEFT, padx=4)
+        _make_dlg_btn(btn_frame, "Cancel", self.destroy, "#555555").pack(side=tk.LEFT, padx=4)
 
         # Center
         self.update_idletasks()

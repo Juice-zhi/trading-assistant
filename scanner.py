@@ -367,12 +367,8 @@ class StockScanner:
             )
 
         if alert is not None:
-            if not state.is_on_cooldown(alert.alert_type, self.cooldown_minutes):
-                state.record_alert(alert.alert_type)
-                self._queue.put(alert)
-                logger.info("Alert queued: %s %s %s", symbol, alert.state.name, alert.direction.value)
-            else:
-                logger.debug("Alert suppressed (cooldown): %s %s", symbol, alert.alert_type)
+            self._queue.put(alert)
+            logger.info("Alert queued: %s %s %s", symbol, alert.state.name, alert.direction.value)
 
     def get_snapshot(self, symbol: str) -> Optional[Tuple[SignalState, TrendDirection]]:
         """Return current (state, direction) for a symbol, or None if unknown."""
