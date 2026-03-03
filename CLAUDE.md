@@ -12,3 +12,11 @@ git push origin main
 ```
 
 Never leave changes committed locally without pushing.
+
+## Restart After Update
+
+After every update, kill any running instance and start a fresh one:
+
+```bash
+pkill -f "python main.py"; sleep 1; python /Users/guozhi/Agent/trading_assistant/main.py
+```
