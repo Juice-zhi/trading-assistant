@@ -101,7 +101,7 @@ class MainWindow:
         bar.pack(fill=tk.X, side=tk.TOP)
         bar.pack_propagate(False)
 
-        title = tk.Label(bar, text="Trading Assistant", bg=BG_PANEL, fg="white",
+        title = tk.Label(bar, text="Trading Assistant  v1.0.0", bg=BG_PANEL, fg="white",
                          font=("Helvetica", 13, "bold"))
         title.pack(side=tk.LEFT, padx=14)
 
