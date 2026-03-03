@@ -115,7 +115,7 @@ class TestFetchOHLCV(unittest.TestCase):
         mock_ticker.history.assert_called_once_with(
             period="5d",
             interval="1m",
-            prepost=False,
+            prepost=True,
             auto_adjust=True,
         )
 
@@ -130,7 +130,7 @@ class TestFetchOHLCV(unittest.TestCase):
         mock_ticker.history.assert_called_once_with(
             period="1d",
             interval="5m",
-            prepost=False,
+            prepost=True,
             auto_adjust=True,
         )
 

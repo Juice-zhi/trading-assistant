@@ -1,6 +1,8 @@
 """
 DataFetcher: yfinance wrapper that fetches 1-minute OHLCV data.
 Uses period="5d" to get ~1950 bars, ensuring EMA200 is fully converged.
+Includes pre/post-market data (prepost=True) so that EMA calculations
+already reflect premarket price action at the regular-session open.
 """
 import logging
 from typing import Optional
@@ -15,12 +17,15 @@ def fetch_ohlcv(symbol: str, period: str = "5d", interval: str = "1m") -> Option
     """
     Fetch OHLCV data for a symbol via yfinance.
 
+    prepost=True includes pre/post-market bars so the EMA is already
+    "warmed up" with premarket price action by the time regular trading opens.
+
     Returns a DataFrame with columns [Open, High, Low, Close, Volume]
     indexed by UTC datetime, or None on failure.
     """
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval, prepost=False, auto_adjust=True)
+        df = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=True)
 
         if df is None or df.empty:
             logger.warning("No data returned for %s", symbol)
