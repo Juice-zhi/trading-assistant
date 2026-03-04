@@ -200,6 +200,12 @@ class MainWindow:
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         self._tree.pack(fill=tk.BOTH, expand=True)
 
+        # Drag-to-reorder
+        self._drag_item: Optional[str] = None
+        self._tree.bind("<ButtonPress-1>",   self._drag_start)
+        self._tree.bind("<B1-Motion>",        self._drag_motion)
+        self._tree.bind("<ButtonRelease-1>",  self._drag_end)
+
     def _build_statusbar(self) -> None:
         bar = tk.Frame(self.root, bg=BG_PANEL, height=24)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
@@ -353,6 +359,37 @@ class MainWindow:
         if alert.direction == TrendDirection.BULLISH:
             return ROW_TAG_BULLISH
         return ROW_TAG_BEARISH
+
+    # ── Drag-to-reorder ───────────────────────────────────────────────────────
+
+    def _drag_start(self, event: tk.Event) -> None:
+        item = self._tree.identify_row(event.y)
+        if item:
+            self._drag_item = item
+
+    def _drag_motion(self, event: tk.Event) -> None:
+        if not self._drag_item:
+            return
+        target = self._tree.identify_row(event.y)
+        if not target or target == self._drag_item:
+            return
+        # Determine insertion position: above or below target based on cursor position
+        bbox = self._tree.bbox(target)
+        if not bbox:
+            return
+        # Insert above target when cursor is in upper half, else insert after target
+        if event.y < bbox[1] + bbox[3] // 2:
+            self._tree.move(self._drag_item, "", self._tree.index(target))
+        else:
+            self._tree.move(self._drag_item, "", self._tree.index(target) + 1)
+
+    def _drag_end(self, event: tk.Event) -> None:
+        if not self._drag_item:
+            return
+        self._drag_item = None
+        # Persist new order to config
+        new_order = list(self._tree.get_children())
+        self.config.symbols = new_order
 
     # ── Market status update (called from main thread) ────────────────────────
 
