@@ -37,7 +37,11 @@ class DiscordNotifier:
         Send a plain-text alert. Returns True on success, False on failure.
         Silently no-ops if disabled or webhook_url is empty.
         """
-        if not self.enabled or not self.webhook_url:
+        if not self.enabled:
+            logger.debug("Discord notifier disabled, skipping alert for %s", alert.symbol)
+            return False
+        if not self.webhook_url:
+            logger.warning("Discord notifier enabled but webhook_url is empty, skipping alert for %s", alert.symbol)
             return False
 
         payload = {"content": _build_content(alert)}

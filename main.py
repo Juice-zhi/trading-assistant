@@ -25,12 +25,31 @@ from ui.main_window import MainWindow
 from ui.settings_dialog import SettingsDialog
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
+import os
+from logging.handlers import RotatingFileHandler
+
+_LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(_LOG_DIR, "trading_assistant.log")
+
+_log_formatter = logging.Formatter(
+    "%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+# Console handler
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_formatter)
+
+# File handler — rotate at 5 MB, keep 7 files
+_file_handler = RotatingFileHandler(
+    _LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=7, encoding="utf-8"
+)
+_file_handler.setFormatter(_log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 logger = logging.getLogger("main")
+logger.info("Log file: %s", _LOG_FILE)
 
 # ── Market hours ──────────────────────────────────────────────────────────────
 ET = pytz.timezone("America/New_York")
@@ -110,7 +129,8 @@ class ScannerThread(threading.Thread):
             if market_open:
                 self._scan_cycle()
             else:
-                logger.debug("Outside market hours — sleeping 30s")
+                now_et = datetime.now(ET)
+                logger.info("Outside market hours (%s ET) — sleeping 30s", now_et.strftime("%H:%M:%S"))
                 self._stop_event.wait(30)
                 continue
 
