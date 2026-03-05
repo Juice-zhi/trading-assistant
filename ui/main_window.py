@@ -347,9 +347,9 @@ class MainWindow:
         })
         if state == "PULLBACK":
             tag = ROW_TAG_PULLBACK
-        elif direction == "bullish":
+        elif state == "TRENDING" and direction == "bullish":
             tag = ROW_TAG_BULLISH
-        elif direction == "bearish":
+        elif state == "TRENDING" and direction == "bearish":
             tag = ROW_TAG_BEARISH
         else:
             tag = ROW_TAG_NOTRENDL
