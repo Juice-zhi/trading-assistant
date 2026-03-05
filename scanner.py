@@ -287,16 +287,103 @@ class StockScanner:
         distance_ratio = abs(price - ema_f) / atr
         current_trend = self._detect_trend(price, ema_f, ema_m, ema_s)
 
-        # ── Consolidation filter ──────────────────────────────────────────────
-        # Three-indicator voting: BB width + EMA gap + price range.
-        # If ≥ min_votes indicators say "ranging", suppress trend signal.
         consolidating = self._is_consolidating(df, ema_f, ema_m, atr)
         if consolidating:
             current_trend = TrendDirection.NONE
             logger.debug("%s: consolidation detected, suppressing trend signal", symbol)
 
         state = self._get_state(symbol)
+        alert = self._step(symbol, state, df, indicators, current_trend,
+                           price, ema_f, ema_m, ema_s, atr, distance_ratio,
+                           emit_alert=True)
+        if alert is not None:
+            self._queue.put(alert)
+            logger.info("Alert queued: %s %s %s", symbol, alert.state.name, alert.direction.value)
 
+    def warm_up(self, symbol: str, df: pd.DataFrame) -> None:
+        """
+        Replay the last N regular-session bars to bring the state machine up to
+        the correct current state without emitting any alerts.
+
+        Called once per symbol at startup so that a symbol already in a trend is
+        correctly recognised rather than starting from NO_TREND.
+        """
+        if df is None or len(df) < self.ema_slow + 10:
+            return
+
+        indicators = compute_indicators(
+            df,
+            ema_fast=self.ema_fast,
+            ema_mid=self.ema_mid,
+            ema_slow=self.ema_slow,
+            atr_period=self.atr_period,
+        )
+
+        # Determine replay window: enough bars to allow the state machine to
+        # converge — trend_confirm_bars + trend_exit_bars + a small buffer.
+        replay_bars = max(self.trend_confirm_bars + self.trend_exit_bars + 5, 20)
+
+        # Restrict replay to regular-session bars so premarket low-volatility
+        # rows don't create a spurious NO_TREND on startup.
+        _SESSION_OPEN  = dt_time(9, 30)
+        _SESSION_CLOSE = dt_time(16, 0)
+        try:
+            idx_time = df.index.time
+            session_mask = (idx_time >= _SESSION_OPEN) & (idx_time <= _SESSION_CLOSE)
+            session_idx = df.index[session_mask]
+            # Take the last replay_bars session bars; use the full df slice for
+            # indicator values so EMA/ATR are already fully warmed up.
+            if len(session_idx) == 0:
+                replay_indices = df.index[-replay_bars:]
+            else:
+                replay_indices = session_idx[-replay_bars:]
+        except Exception:
+            replay_indices = df.index[-replay_bars:]
+
+        state = self._get_state(symbol)
+
+        for idx in replay_indices:
+            row = indicators.loc[idx]
+            price = float(row["Close"])
+            ema_f = float(row["ema_fast"])
+            ema_m = float(row["ema_mid"])
+            ema_s = float(row["ema_slow"])
+            atr   = float(row["atr"])
+            if atr <= 0:
+                continue
+
+            distance_ratio = abs(price - ema_f) / atr
+            current_trend = self._detect_trend(price, ema_f, ema_m, ema_s)
+
+            # Use the df slice up to and including this bar for consolidation check
+            df_slice = df.loc[:idx]
+            consolidating = self._is_consolidating(df_slice, ema_f, ema_m, atr)
+            if consolidating:
+                current_trend = TrendDirection.NONE
+
+            self._step(symbol, state, df_slice, indicators.loc[:idx],
+                       current_trend, price, ema_f, ema_m, ema_s, atr,
+                       distance_ratio, emit_alert=False)
+
+        logger.info("Warm-up complete for %s: state=%s direction=%s",
+                    symbol, state.signal_state.name, state.direction.value)
+
+    def _step(
+        self,
+        symbol: str,
+        state: "StockState",
+        df: pd.DataFrame,
+        indicators: pd.DataFrame,
+        current_trend: TrendDirection,
+        price: float,
+        ema_f: float,
+        ema_m: float,
+        ema_s: float,
+        atr: float,
+        distance_ratio: float,
+        emit_alert: bool,
+    ) -> Optional["Alert"]:
+        """Run one state-machine tick. Returns an Alert if one should be emitted."""
         prev_state = state.signal_state
         prev_direction = state.direction
 
@@ -304,23 +391,18 @@ class StockScanner:
         if current_trend == TrendDirection.NONE:
             state.trend_confirm_count = 0
             if state.signal_state in (SignalState.TRENDING, SignalState.PULLBACK):
-                # Don't exit immediately — wait for trend_exit_bars consecutive NONE
                 state.no_trend_count += 1
                 if state.no_trend_count >= self.trend_exit_bars:
                     state.signal_state = SignalState.NO_TREND
                     state.direction = TrendDirection.NONE
                     state.no_trend_count = 0
-            # Already NO_TREND: stay
         else:
-            state.no_trend_count = 0  # reset exit counter when trend present
+            state.no_trend_count = 0
 
             if state.signal_state == SignalState.NO_TREND:
-                # Require trend_confirm_bars consecutive bars before entering TRENDING
                 if current_trend == TrendDirection(state.direction.value) if state.direction != TrendDirection.NONE else False:
-                    # Same direction building up
                     state.trend_confirm_count += 1
                 else:
-                    # New direction — reset counter
                     state.trend_confirm_count = 1
                     state.direction = current_trend
 
@@ -330,8 +412,6 @@ class StockScanner:
 
             elif state.signal_state == SignalState.TRENDING:
                 if current_trend != state.direction:
-                    # Direction flipped while trending — reset to NO_TREND so
-                    # confirmation is required for the new direction too
                     state.signal_state = SignalState.NO_TREND
                     state.direction = current_trend
                     state.trend_confirm_count = 1
@@ -347,13 +427,16 @@ class StockScanner:
                     state.signal_state = SignalState.TRENDING
                     state.direction = current_trend
                     state.resumed_from_pullback = True
+
+        if not emit_alert:
+            return None
+
         # ── Emit alerts ───────────────────────────────────────────────────────
         alert: Optional[Alert] = None
 
         if state.signal_state == SignalState.TRENDING:
             resumed = state.resumed_from_pullback
             if resumed:
-                # Clear the flag but don't fire an alert — trend was already known
                 state.resumed_from_pullback = False
             elif prev_state != SignalState.TRENDING or prev_direction != state.direction:
                 alert = Alert(
@@ -381,9 +464,7 @@ class StockScanner:
                 distance_ratio=distance_ratio,
             )
 
-        if alert is not None:
-            self._queue.put(alert)
-            logger.info("Alert queued: %s %s %s", symbol, alert.state.name, alert.direction.value)
+        return alert
 
     def get_snapshot(self, symbol: str) -> Optional[Tuple[SignalState, TrendDirection]]:
         """Return current (state, direction) for a symbol, or None if unknown."""

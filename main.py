@@ -118,9 +118,10 @@ class ScannerThread(threading.Thread):
     def run(self) -> None:
         logger.info("Scanner thread started")
 
-        # Always do an initial scan on startup to populate the UI immediately
-        logger.info("Initial scan (market hours ignored)...")
-        self._scan_cycle()
+        # Warm-up scan: replay recent bars to restore state machine to current
+        # market state without emitting any alerts.
+        logger.info("Warm-up scan (replaying history to restore state)...")
+        self._warm_up_cycle()
 
         while not self._stop_event.is_set():
             market_open = is_market_open()
@@ -141,6 +142,33 @@ class ScannerThread(threading.Thread):
                 self._stop_event.wait(1)
 
         logger.info("Scanner thread stopped")
+
+    def _warm_up_cycle(self) -> None:
+        """Replay recent bars for all symbols to restore state machine state.
+        No alerts are emitted; UI is updated with indicator snapshots only."""
+        symbols = list(self._config.symbols)
+        total = len(symbols)
+        with self._scanner_lock:
+            for idx, symbol in enumerate(symbols, start=1):
+                if self._stop_event.is_set():
+                    break
+                self._alert_queue.put({
+                    "type": "scan_progress",
+                    "symbol": symbol,
+                    "done": idx,
+                    "total": total,
+                })
+                df = fetch_ohlcv(symbol)
+                if df is None:
+                    logger.warning("No data for %s, skipping warm-up", symbol)
+                    continue
+                self._scanner.warm_up(symbol, df)
+                self._push_indicator_update(symbol, df)
+        self._alert_queue.put({
+            "type": "scan_complete",
+            "total": total,
+            "timestamp": datetime.now(ET).strftime("%H:%M:%S"),
+        })
 
     def _scan_cycle(self) -> None:
         symbols = list(self._config.symbols)   # snapshot before iteration
