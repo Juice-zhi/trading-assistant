@@ -1,11 +1,11 @@
 """
 MainWindow: dark-themed tkinter Treeview showing live stock states.
 
-Columns: Symbol | State | Direction | Price | EMA20 | EMA50 | EMA200 | ATR | Dist/ATR | Last Update
+Columns: Symbol | Signal | Price | EMA20 | EMA50 | EMA200 | ATR | Dist/ATR | Last Update
 Row colors:
-  green  — TRENDING bullish
-  red    — TRENDING bearish
-  yellow — PULLBACK (either direction)
+  green  — TRENDING↑
+  red    — TRENDING↓
+  yellow — PULLBACK↑ / PULLBACK↓
   grey   — NO_TREND
 """
 import queue
@@ -30,30 +30,39 @@ ROW_TAG_BEARISH = "bearish"
 ROW_TAG_PULLBACK = "pullback"
 ROW_TAG_NOTRENDL = "notrend"
 
-COLUMNS = ("symbol", "state", "direction", "price", "ema20", "ema50", "ema200", "atr", "dist_atr", "updated")
+
+def _format_signal(state: str, direction: str) -> str:
+    """Combine state + direction into a single display string."""
+    s = state.upper()
+    d = direction.lower()
+    if s == "TRENDING":
+        return "TRENDING↑" if d == "bullish" else "TRENDING↓"
+    if s == "PULLBACK":
+        return "PULLBACK↑" if d == "bullish" else "PULLBACK↓"
+    return "NO_TREND"
+
+COLUMNS = ("symbol", "signal", "price", "ema20", "ema50", "ema200", "atr", "dist_atr", "updated")
 COL_HEADERS = {
-    "symbol":    "Symbol",
-    "state":     "State",
-    "direction": "Direction",
-    "price":     "Price",
-    "ema20":     "EMA20",
-    "ema50":     "EMA50",
-    "ema200":    "EMA200",
-    "atr":       "ATR(14)",
-    "dist_atr":  "Dist/ATR",
-    "updated":   "Updated",
+    "symbol":  "Symbol",
+    "signal":  "Signal",
+    "price":   "Price",
+    "ema20":   "EMA20",
+    "ema50":   "EMA50",
+    "ema200":  "EMA200",
+    "atr":     "ATR(14)",
+    "dist_atr":"Dist/ATR",
+    "updated": "Updated",
 }
 COL_WIDTHS = {
-    "symbol":    80,
-    "state":     90,
-    "direction": 90,
-    "price":     80,
-    "ema20":     80,
-    "ema50":     80,
-    "ema200":    80,
-    "atr":       70,
-    "dist_atr":  80,
-    "updated":   140,
+    "symbol":  80,
+    "signal":  110,
+    "price":   80,
+    "ema20":   80,
+    "ema50":   80,
+    "ema200":  80,
+    "atr":     70,
+    "dist_atr":80,
+    "updated": 140,
 }
 
 
@@ -231,16 +240,15 @@ class MainWindow:
     def _ensure_row(self, symbol: str) -> None:
         if symbol not in self._rows:
             self._rows[symbol] = {
-                "symbol": symbol,
-                "state": "—",
-                "direction": "—",
-                "price": "—",
-                "ema20": "—",
-                "ema50": "—",
-                "ema200": "—",
-                "atr": "—",
+                "symbol":   symbol,
+                "signal":   "—",
+                "price":    "—",
+                "ema20":    "—",
+                "ema50":    "—",
+                "ema200":   "—",
+                "atr":      "—",
                 "dist_atr": "—",
-                "updated": "—",
+                "updated":  "—",
             }
             self._tree.insert("", tk.END, iid=symbol, values=self._row_values(symbol),
                               tags=(ROW_TAG_NOTRENDL,))
@@ -271,19 +279,15 @@ class MainWindow:
         symbol = alert.symbol
         self._ensure_row(symbol)
 
-        state_str = alert.state.name
-        direction_str = alert.direction.value.capitalize()
-
         self._rows[symbol].update({
-            "state": state_str,
-            "direction": direction_str,
-            "price": f"{alert.price:.4f}",
-            "ema20": f"{alert.ema_fast:.4f}",
-            "ema50": f"{alert.ema_mid:.4f}",
-            "ema200": f"{alert.ema_slow:.4f}",
-            "atr": f"{alert.atr:.4f}",
+            "signal":   _format_signal(alert.state.name, alert.direction.value),
+            "price":    f"{alert.price:.4f}",
+            "ema20":    f"{alert.ema_fast:.4f}",
+            "ema50":    f"{alert.ema_mid:.4f}",
+            "ema200":   f"{alert.ema_slow:.4f}",
+            "atr":      f"{alert.atr:.4f}",
             "dist_atr": f"{alert.distance_ratio:.3f}",
-            "updated": alert.timestamp.strftime("%H:%M:%S"),
+            "updated":  alert.timestamp.strftime("%H:%M:%S"),
         })
 
         tag = self._alert_tag(alert)
@@ -291,8 +295,9 @@ class MainWindow:
 
         self._alert_count += 1
         self._alert_count_label.configure(text=f"Alerts: {self._alert_count}")
+        signal_str = _format_signal(alert.state.name, alert.direction.value)
         self._status_label.configure(
-            text=f"[{datetime.now().strftime('%H:%M:%S')}] {symbol}: {direction_str} {state_str}"
+            text=f"[{datetime.now().strftime('%H:%M:%S')}] {symbol}: {signal_str}"
         )
 
     def _handle_status(self, msg: dict) -> None:
@@ -328,20 +333,18 @@ class MainWindow:
     def _handle_indicator_update(self, msg: dict) -> None:
         symbol = msg["symbol"]
         self._ensure_row(symbol)
-        self._rows[symbol].update({
-            "state":     msg.get("signal_state", "NO_TREND"),
-            "direction": msg.get("direction", "none").capitalize(),
-            "price":     f"{msg['price']:.4f}",
-            "ema20":     f"{msg['ema_fast']:.4f}",
-            "ema50":     f"{msg['ema_mid']:.4f}",
-            "ema200":    f"{msg['ema_slow']:.4f}",
-            "atr":       f"{msg['atr']:.4f}",
-            "dist_atr":  f"{msg['dist_atr']:.3f}",
-            "updated":   datetime.now().strftime("%H:%M:%S"),
-        })
-        # Pick row color by state/direction
         state = msg.get("signal_state", "NO_TREND")
         direction = msg.get("direction", "none")
+        self._rows[symbol].update({
+            "signal":   _format_signal(state, direction),
+            "price":    f"{msg['price']:.4f}",
+            "ema20":    f"{msg['ema_fast']:.4f}",
+            "ema50":    f"{msg['ema_mid']:.4f}",
+            "ema200":   f"{msg['ema_slow']:.4f}",
+            "atr":      f"{msg['atr']:.4f}",
+            "dist_atr": f"{msg['dist_atr']:.3f}",
+            "updated":  datetime.now().strftime("%H:%M:%S"),
+        })
         if state == "PULLBACK":
             tag = ROW_TAG_PULLBACK
         elif direction == "bullish":
