@@ -11,7 +11,7 @@ State machine per symbol:
 import logging
 import queue
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from enum import Enum, auto
 from typing import Dict, Optional, Tuple
 
@@ -200,6 +200,10 @@ class StockScanner:
         3. Price range — (highest High - lowest Low) over recent N bars,
                          normalised by EMA50, is small.
 
+        Indicators 1 and 3 use only regular-session bars (09:30–16:00 ET) so that
+        the naturally low volatility of pre/post-market bars does not cause a false
+        consolidation reading at the regular-session open.
+
         All thresholds are configurable; set consolidation_min_votes=0 to disable.
         """
         if self.consolidation_min_votes <= 0:
@@ -207,10 +211,21 @@ class StockScanner:
 
         votes = 0
 
+        # Filter to regular-session bars only for range-based indicators so that
+        # pre/post-market low-volatility bars don't inflate the consolidation signal.
+        _SESSION_OPEN  = dt_time(9, 30)
+        _SESSION_CLOSE = dt_time(16, 0)
+        try:
+            idx_time = df.index.time
+            session_mask = (idx_time >= _SESSION_OPEN) & (idx_time <= _SESSION_CLOSE)
+            df_session = df[session_mask]
+        except Exception:
+            df_session = df  # fallback: use full df if index has no .time
+
         # ── 1. Bollinger Band width ───────────────────────────────────────────
         bb_period = self.consolidation_bb_period
-        if len(df) >= bb_period:
-            close = df["Close"].iloc[-bb_period:]
+        if len(df_session) >= bb_period:
+            close = df_session["Close"].iloc[-bb_period:]
             sma = float(close.mean())
             if sma > 0:
                 std = float(close.std(ddof=1))
@@ -226,9 +241,9 @@ class StockScanner:
 
         # ── 3. Recent price range ─────────────────────────────────────────────
         n = self.consolidation_range_bars
-        if len(df) >= n and ema_m > 0:
-            recent_high = float(df["High"].iloc[-n:].max())
-            recent_low  = float(df["Low"].iloc[-n:].min())
+        if len(df_session) >= n and ema_m > 0:
+            recent_high = float(df_session["High"].iloc[-n:].max())
+            recent_low  = float(df_session["Low"].iloc[-n:].min())
             range_ratio = (recent_high - recent_low) / ema_m
             if range_ratio < self.consolidation_range_threshold:
                 votes += 1
